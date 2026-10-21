@@ -1,0 +1,28 @@
+{
+  "name": "reelbox-static",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite",
+    "dev:api": "python -m uvicorn main:app --app-dir resolver-api --host 0.0.0.0 --port 8000",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "dashjs": "^5.0.3",
+    "hls.js": "^1.6.15",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.1"
+  }
+}

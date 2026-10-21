@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: reelbox-stream-resolver
+    runtime: python
+    plan: free
+    buildCommand: pip install -r resolver-api/requirements.txt
+    startCommand: uvicorn main:app --app-dir resolver-api --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.4
+      - key: MEDIA_TOKEN_SECRET
+        generateValue: true
