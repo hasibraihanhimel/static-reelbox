@@ -11,3 +11,20 @@ services:
         value: 3.12.4
       - key: MEDIA_TOKEN_SECRET
         generateValue: true
+  - type: web
+    name: reelbox-site
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: VITE_STREAM_RESOLVER_URL
+        fromService:
+          type: web
+          name: reelbox-stream-resolver
+          envVarKey: RENDER_EXTERNAL_URL
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
