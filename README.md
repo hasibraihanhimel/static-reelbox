@@ -1,71 +1,57 @@
 # Reelbox
 
-Reelbox is a React, TypeScript, and Vite streaming catalog with a custom browser video player. It uses a FastAPI service to resolve playback sources and relay media bytes with the provider's required headers.
+Reelbox is a React, TypeScript, and Vite static streaming catalog. The frontend is published on Netlify. A small FastAPI service on Render resolves titles and playback URLs; production uses direct media delivery so video bytes do not pass through Render.
 
-## Deploy the whole site on Render
+## Deployment layout
 
-The root `render.yaml` defines both the frontend and resolver. Render builds the frontend with `VITE_STREAM_RESOLVER_URL` set to the resolver's generated public HTTPS URL, then publishes `dist/`. The API has a `/health` check, and the static site has a client-side route rewrite.
+- **Netlify:** static frontend built into `dist/`, with SPA rewrites from `public/_redirects`.
+- **Render:** resolver API only. `MEDIA_DELIVERY_MODE=direct` returns provider media URLs to the browser instead of proxying video and subtitle bytes through Render.
+- **Search:** search and suggestion requests go directly from the browser to the provider API. Keep the current search implementation in `src/api/client.ts` when changing deployment settings.
 
-### 1. Put the project in GitHub
+The frontend has a production fallback for `https://reelbox-stream-resolver.onrender.com`. `netlify.toml` also sets this URL for Netlify builds. If the Render service URL changes, update the Netlify build setting and the fallback in `src/api/client.ts`; update `FRONTEND_URL` in Render if the Netlify domain changes.
 
-Render deploys a Blueprint from a Git repository. Push the project root containing `render.yaml`, `package.json`, `package-lock.json`, `src/`, and `resolver-api/` to a GitHub repository. Do not upload `node_modules`, `dist`, or `.env` files.
+## Deploy the resolver API on Render
 
-If this project is not in GitHub yet, create an empty GitHub repository, then run these commands in PowerShell from the project folder (replace the URL with your repository URL):
+1. Push the repository, including `render.yaml`, to GitHub.
+2. In Render, choose **New** → **Blueprint**, connect the repository, and deploy the `reelbox-stream-resolver` service.
+3. Wait for **Live**, then open `https://reelbox-stream-resolver.onrender.com/health`. It should return `{"status":"ok","media_delivery_mode":"direct"}`.
+4. Confirm the Render service environment contains `MEDIA_DELIVERY_MODE=direct`.
+
+The Render service returns small API responses and resolves stream links. With direct mode enabled, it does not relay video bytes. Requests for API responses still use some Render outbound bandwidth. Render free web services can sleep while idle, so the first API request after inactivity may take about a minute; the frontend allows up to 75 seconds per resolver request attempt.
+
+## Deploy the static frontend on Netlify
+
+### Manual `dist` upload
+
+From the project folder in PowerShell:
 
 ```powershell
-git init
-git add .
-git commit -m "Prepare Reelbox for Render"
-git branch -M main
-git remote add origin https://github.com/YOUR-USER/YOUR-REPO.git
-git push -u origin main
+npm ci
+$env:VITE_STREAM_RESOLVER_URL = "https://reelbox-stream-resolver.onrender.com"
+npm run build
 ```
 
-### 2. Create the Render Blueprint
+Upload the generated `dist/` directory to Netlify. Vite copies `public/_redirects` into `dist/` so direct visits to routes such as `/search` and `/watch/movie/...` load the app.
 
-1. Sign in to the [Render Dashboard](https://dashboard.render.com/).
-2. Choose **New** → **Blueprint**.
-3. Connect the GitHub repository and choose its branch.
-4. Confirm the Blueprint lists two services: `reelbox-stream-resolver` and `reelbox-site`.
-5. Choose **Deploy Blueprint**.
+### Git-connected Netlify site
 
-Render installs the Python requirements and starts the resolver. It installs the Node dependencies, builds the React app, and publishes the static output. The Blueprint generates `MEDIA_TOKEN_SECRET` for the resolver and wires the resolver's public URL into the frontend build automatically.
+Connect the repository to Netlify. `netlify.toml` sets the build command to `npm ci && npm run build`, the publish directory to `dist`, and the resolver URL for the build.
 
-### 3. Check the deployment
+## Bandwidth and direct-playback limitation
 
-Wait until both services show **Live** in the Render Dashboard. Open the resolver service's URL with `/health` appended; it should return `{"status":"ok"}`. Then open the `reelbox-site` URL shown in Render and try a title. The site should use the resolver deployed in the same Blueprint.
+In direct mode, the browser downloads each media stream from the provider's media host, not from Netlify or Render. Netlify still serves the app's HTML, JavaScript, CSS, and images; Render still sends resolver JSON. Hosting plans have their own included usage limits, so this avoids sending large video files through Render but does not mean all network traffic is unlimited or literally bandwidth-free.
 
-Render gives the frontend a new `onrender.com` address. The existing `reelhousec.netlify.app` address remains on Netlify; to use your own domain on Render, add it to the `reelbox-site` service in Render and follow the displayed DNS instructions.
-
-### Render free plan notes
-
-The frontend static site is free. A free resolver web service sleeps after 15 minutes without traffic and can take about a minute to wake on the next request. Video and subtitle bytes pass through the resolver, so they count toward Render outbound bandwidth. Render's Hobby workspace includes 5 GB per month; extra public bandwidth is currently billed at $0.15 per GB when billing is enabled, and services can be suspended after the included amount is used when no payment method is on file. Check the current [free plan limits](https://render.com/docs/free) and [bandwidth pricing](https://render.com/docs/outbound-bandwidth) before serving many viewers.
+Direct playback depends on the provider allowing browser requests to its media URLs. MP4 and native HLS can play directly when the provider accepts the browser request. HLS.js and DASH.js may require provider CORS headers, and some providers require a custom `Referer` header browsers cannot set. If that happens, set `MEDIA_DELIVERY_MODE=proxy` in Render and redeploy: the resolver's header-preserving media proxy may restore playback, but the video traffic will then count as Render outbound bandwidth. The deployment defaults to `direct` so it never silently sends video through Render.
 
 ## Run locally
 
-Install frontend and resolver dependencies once:
+Install dependencies once:
 
 ```powershell
 npm install
 python -m pip install -r resolver-api/requirements.txt
 ```
 
-Start both services together:
+Start both services together with `npm run dev`. The Vite site prints its local address, and the API listens on port `8000`. Press Ctrl+C to stop both. On a phone using the same Wi-Fi, open the development PC's LAN address.
 
-```powershell
-npm run dev
-```
-
-Vite prints the website address, and the resolver listens on port `8000`. Press Ctrl+C to stop both. On a phone using the same Wi-Fi, open the development PC's LAN address. If Python uses a different executable name, set `PYTHON` to that executable before starting the app.
-
-You can run just the frontend with `npm run dev:web` or just the API with `npm run dev:api`.
-
-## Resolver routes
-
-- `GET /health` reports service health.
-- `GET /movies?page={page}`, `GET /tv-series?page={page}`, and `GET /animation?page={page}` return typed catalog pages.
-- `GET /api/stream/{subject_id}?detail_path={slug}&se={season}&ep={episode}` returns playback sources.
-- `GET /api/stream/{subject_id}/captions?detail_path={slug}&se={season}&ep={episode}` returns captions.
-- `GET` or `HEAD /api/media/{signed_token}` relays provider media bytes and byte ranges.
-
-The provider may have no source for a particular title or may restrict access by region or time; the resolver cannot create an unavailable source.
+You can run only the frontend with `npm run dev:web` or only the API with `npm run dev:api`. Local API mode uses the media proxy by default; Render explicitly uses direct mode.

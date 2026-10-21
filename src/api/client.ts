@@ -5,6 +5,7 @@ const configuredBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)
 const DEFAULT_API_BASE = 'https://h5-api.aoneroom.com/wefeed-h5api-bff';
 export const apiBaseUrl = (configuredBase || DEFAULT_API_BASE).replace(/\/+$/, '');
 const configuredResolver = (import.meta.env.VITE_STREAM_RESOLVER_URL as string | undefined)?.trim();
+const DEFAULT_PUBLIC_RESOLVER_URL = 'https://reelbox-stream-resolver.onrender.com';
 const LOOPBACK_URL = /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:\/|$)/i;
 const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
 
@@ -18,22 +19,36 @@ function isLocalNetworkHost(hostname: string) {
   return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
 }
 
-function getStreamResolverBaseUrl(): string | null {
+function getStreamResolverBaseUrl(): string {
   const pageHostname = typeof window === 'undefined' ? 'localhost' : window.location.hostname;
   const pageIsLocal = isLocalNetworkHost(pageHostname);
 
-  if (configuredResolver && !LOOPBACK_URL.test(configuredResolver)) {
-    return configuredResolver.replace(/\/+$/, '');
+  if (configuredResolver) {
+    try {
+      const configuredUrl = new URL(configuredResolver);
+      if (pageIsLocal && !LOOPBACK_URL.test(configuredResolver)) return configuredUrl.origin;
+
+      const validHostedResolver = configuredUrl.protocol === 'https:'
+        && !configuredUrl.port
+        && !LOOPBACK_URL.test(configuredResolver)
+        && configuredUrl.hostname.toLowerCase() !== pageHostname.toLowerCase();
+      if (!pageIsLocal && validHostedResolver) return configuredUrl.origin;
+    } catch { /* Use the known public resolver URL for invalid production build settings. */ }
   }
 
-  if (configuredResolver && !pageIsLocal) return null;
+  // The Netlify frontend is static; its resolver runs as a separate Render API.
+  // This fallback also protects manual `npm run build` deployments when the
+  // VITE_STREAM_RESOLVER_URL build variable was not provided.
+  if (!pageIsLocal && typeof window !== 'undefined') return DEFAULT_PUBLIC_RESOLVER_URL;
 
   // A phone's 127.0.0.1 is the phone itself. Use the same host that served
   // a local frontend, but the resolver's port, so LAN clients reach the dev PC.
-  // Production deployments should configure the public resolver URL explicitly.
+  // The production URL is selected above; this port is for local development.
   if (typeof window !== 'undefined') {
     const resolver = new URL(window.location.origin);
-    const configuredPort = configuredResolver ? new URL(configuredResolver).port : '';
+    let configuredPort = '';
+    try { configuredPort = configuredResolver ? new URL(configuredResolver).port : ''; }
+    catch { /* Ignore malformed local build settings and use the development port. */ }
     resolver.port = configuredPort || '8000';
     return resolver.origin;
   }
@@ -66,11 +81,11 @@ function absorbToken(response: Response) {
   } catch { /* Keep using the in-memory guest token if this optional header is malformed. */ }
 }
 
-async function fetchJson<T>(url: string, init: RequestInit = {}, externalSignal?: AbortSignal): Promise<{ value: T; response: Response }> {
+async function fetchJson<T>(url: string, init: RequestInit = {}, externalSignal?: AbortSignal, timeoutMs = 15_000): Promise<{ value: T; response: Response }> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(new Error('Request timed out')), 15_000);
+    const timeout = window.setTimeout(() => controller.abort(new Error('Request timed out')), timeoutMs);
     const abort = () => controller.abort(externalSignal?.reason);
     externalSignal?.addEventListener('abort', abort, { once: true });
     try {
@@ -109,15 +124,13 @@ async function fetchJson<T>(url: string, init: RequestInit = {}, externalSignal?
 }
 
 async function requestResolver<T>(path: string): Promise<T> {
-  if (!streamResolverBaseUrl) {
-    throw new Error('Playback is not configured for this hosted site. Deploy the supplied resolver API, set VITE_STREAM_RESOLVER_URL to its public HTTPS URL in the site build settings, then rebuild and redeploy.');
-  }
   try {
-    const { value } = await fetchJson<T>(`${streamResolverBaseUrl}${path}`, { headers: { Accept: 'application/json' } });
+    // Render's free API may be waking from idle; allow its cold start to finish.
+    const { value } = await fetchJson<T>(`${streamResolverBaseUrl}${path}`, { headers: { Accept: 'application/json' } }, undefined, 75_000);
     return value;
   } catch (error) {
     if (error instanceof Error && error.message.includes('Unable to connect')) {
-      throw new Error(`Can't reach the Reelbox stream resolver at ${streamResolverBaseUrl}. Confirm the API service is running and that VITE_STREAM_RESOLVER_URL points to its public HTTPS address.`);
+      throw new Error(`Can't reach the Reelbox playback API at ${streamResolverBaseUrl}. Check that the Render resolver service is live and reachable over HTTPS.`);
     }
     throw error;
   }

@@ -127,7 +127,7 @@ export function VideoPlayer({ sources, captions, audioVariants = [], initialAudi
     setError(''); setSubtitleError(''); setLoading(true); setBuffering(false); setQualityOptions([]); setAudioTracks([]); setSubtitleTracks([]);
     if (!activeSource || !activeMode) { setLoading(false); setError('No browser-compatible video source was returned by the API.'); return; }
     let cancelled = false;
-    const sourceFailed = () => { if (!cancelled) tryFallback('The stream could not be loaded. Check that the playback resolver is running and try another source.'); };
+    const sourceFailed = () => { if (!cancelled) tryFallback('The media host refused this browser request. It may require CORS support or a server-side relay.'); };
     element.addEventListener('error', sourceFailed);
     if (activeMode === 'mp4') {
       element.src = activeSource.url; element.load();

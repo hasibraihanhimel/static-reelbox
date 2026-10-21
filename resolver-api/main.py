@@ -7,6 +7,7 @@ import hmac
 import ipaddress
 import secrets
 import time
+import html
 from urllib.parse import urljoin, urlparse
 import truststore
 truststore.inject_into_ssl()
@@ -33,6 +34,7 @@ app.add_middleware(
 
 BASE_URL = "https://moviebox.ph"
 API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://reelhousec.netlify.app").strip().rstrip("/")
 
 _bearer_token: str | None = None
 
@@ -75,6 +77,9 @@ PLAYER_HEADERS = {
 MEDIA_TOKEN_SECRET = os.environ.get("MEDIA_TOKEN_SECRET", "") or secrets.token_urlsafe(32)
 MEDIA_TOKEN_TTL_SECONDS = 12 * 60 * 60
 MEDIA_PUBLIC_BASE_URL = os.environ.get("MEDIA_PUBLIC_BASE_URL", "").rstrip("/")
+MEDIA_DELIVERY_MODE = os.environ.get("MEDIA_DELIVERY_MODE", "proxy").strip().lower()
+if MEDIA_DELIVERY_MODE not in {"direct", "proxy"}:
+    raise RuntimeError("MEDIA_DELIVERY_MODE must be either 'direct' or 'proxy'.")
 
 
 def _b64url(data: bytes) -> str:
@@ -131,18 +136,26 @@ def _media_proxy_url(url: str, referer: str, request: Request) -> str:
     return f"{public_base}/api/media/{_sign_media_url(url, referer)}"
 
 
-def _wrap_media_entries(entries, referer: str, request: Request):
-    wrapped = []
+def _media_delivery_url(url: str, referer: str, request: Request) -> str:
+    # Direct mode returns the provider URL so video bytes travel from the
+    # provider to the viewer, not through this API service.
+    if MEDIA_DELIVERY_MODE == "direct":
+        return url
+    return _media_proxy_url(url, referer, request)
+
+
+def _prepare_media_entries(entries, referer: str, request: Request):
+    prepared = []
     for entry in entries or []:
         if isinstance(entry, str):
-            wrapped.append(_media_proxy_url(entry, referer, request))
+            prepared.append(_media_delivery_url(entry, referer, request))
         elif isinstance(entry, dict):
             item = dict(entry)
             key = "url" if item.get("url") else "src" if item.get("src") else None
             if key:
-                item[key] = _media_proxy_url(item[key], referer, request)
-            wrapped.append(item)
-    return wrapped
+                item[key] = _media_delivery_url(item[key], referer, request)
+            prepared.append(item)
+    return prepared
 
 
 def _rewrite_hls_playlist(body: bytes, base_url: str, referer: str, request: Request) -> bytes:
@@ -170,6 +183,8 @@ def _rewrite_hls_playlist(body: bytes, base_url: str, referer: str, request: Req
 @app.api_route("/api/media/{token}", methods=["GET", "HEAD"])
 async def relay_media(token: str, request: Request):
     """Stream provider bytes without buffering; preserve byte-range playback."""
+    if MEDIA_DELIVERY_MODE == "direct":
+        raise HTTPException(status_code=410, detail="Media relay is disabled in direct delivery mode.")
     upstream_url, player_referer = _read_media_token(token)
     parsed_referer = urlparse(player_referer)
     headers = {
@@ -507,10 +522,17 @@ async def dashboard():
     <body>
         <div class="container">
             <header>
-                <div class="badge">Enterprise API Solution</div>
+                <div class="badge">Resolver API Service</div>
                 <h1>Reelbox Stream Resolver</h1>
-                <p style="color: #667; font-size: 1.25rem; font-weight: 300;">State-of-the-Art Pure API Architecture</p>
+                <p style="color: #667; font-size: 1.25rem; font-weight: 300;">Playback delivery mode: __MEDIA_DELIVERY_MODE__</p>
             </header>
+
+            <div class="card" style="max-width: 760px; margin: 0 auto 36px;">
+                <div class="card-title"><i>↗</i> This is the backend API</div>
+                <p class="card-desc">The Reelbox website is hosted separately as a static Netlify site. Open it here:</p>
+                <a href="__FRONTEND_URL__" class="btn">Open Reelbox Website</a>
+                <p style="color: #9ea3ac; margin-top: 18px;">Service health: <a href="/health" style="color: #00f2ff;">/health</a> · API reference: <a href="/docs" style="color: #00f2ff;">/docs</a></p>
+            </div>
 
             <div class="grid">
                 <div class="card">
@@ -557,18 +579,20 @@ async def dashboard():
             </div>
 
             <footer>
-                <div class="dev-tag">Developer: Walter</div>
+                <div class="dev-tag">Reelbox Resolver API</div>
             </footer>
         </div>
     </body>
     </html>
     """
+    html_content = html_content.replace("__FRONTEND_URL__", html.escape(FRONTEND_URL, quote=True))
+    html_content = html_content.replace("__MEDIA_DELIVERY_MODE__", html.escape(MEDIA_DELIVERY_MODE))
     return HTMLResponse(content=html_content)
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "media_delivery_mode": MEDIA_DELIVERY_MODE}
 
 @app.get("/home")
 async def get_home():
@@ -714,7 +738,7 @@ async def get_stream_sources(subject_id: str, request: Request, detail_path: str
         {
             "resolution": f"{s.get('resolutions')}p",
             "format": s.get("format"),
-            "url": _media_proxy_url(s.get("url"), player_referer, request) if s.get("url") else None,
+            "url": _media_delivery_url(s.get("url"), player_referer, request) if s.get("url") else None,
             "size": s.get("size"),
             "duration": s.get("duration"),
             "codec": s.get("codecName")
@@ -727,8 +751,8 @@ async def get_stream_sources(subject_id: str, request: Request, detail_path: str
         "ep": ep,
         "has_resource": has_resource,
         "sources": streams,
-        "hls": _wrap_media_entries(data.get("hls", []), player_referer, request),
-        "dash": _wrap_media_entries(data.get("dash", []), player_referer, request),
+        "hls": _prepare_media_entries(data.get("hls", []), player_referer, request),
+        "dash": _prepare_media_entries(data.get("dash", []), player_referer, request),
         "free_episodes": data.get("freeNum"),
         "limited": data.get("limited", False),
         "note": None if has_resource else "No stream found for this episode."
@@ -771,17 +795,17 @@ async def get_captions(subject_id: str, request: Request, detail_path: str, se: 
     data = await _make_request(cap_url)
     inner = data.get("data", {})
     captions = inner.get("captions", []) if isinstance(inner, dict) else inner
-    proxied_captions = []
+    resolved_captions = []
     for caption in captions or []:
         if isinstance(caption, str):
-            proxied_captions.append(_media_proxy_url(urljoin(API_BASE + "/", caption), player_referer, request))
+            resolved_captions.append(_media_delivery_url(urljoin(API_BASE + "/", caption), player_referer, request))
         elif isinstance(caption, dict):
             item = dict(caption)
             for key in ("url", "src", "file"):
                 if item.get(key):
-                    item[key] = _media_proxy_url(urljoin(API_BASE + "/", item[key]), player_referer, request)
-            proxied_captions.append(item)
-    return {"subject_id": subject_id, "se": se, "ep": ep, "count": len(proxied_captions), "captions": proxied_captions}
+                    item[key] = _media_delivery_url(urljoin(API_BASE + "/", item[key]), player_referer, request)
+            resolved_captions.append(item)
+    return {"subject_id": subject_id, "se": se, "ep": ep, "count": len(resolved_captions), "captions": resolved_captions}
 
 if __name__ == "__main__":
     import uvicorn
