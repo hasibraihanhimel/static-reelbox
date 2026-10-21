@@ -12,6 +12,6 @@ services:
       - key: MEDIA_TOKEN_SECRET
         generateValue: true
       - key: MEDIA_DELIVERY_MODE
-        value: direct
+        value: proxy
       - key: FRONTEND_URL
         value: https://reelhousec.netlify.app
