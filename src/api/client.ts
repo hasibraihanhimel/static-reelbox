@@ -22,32 +22,23 @@ function getStreamResolverBaseUrl(): string | null {
   const pageHostname = typeof window === 'undefined' ? 'localhost' : window.location.hostname;
   const pageIsLocal = isLocalNetworkHost(pageHostname);
 
-  if (configuredResolver) {
-    // A loopback resolver belongs to the viewer's device, so it cannot be
-    // used by visitors to a public site. Hosted builds must name a public API.
-    if (!pageIsLocal && LOOPBACK_URL.test(configuredResolver)) return null;
-    if (!pageIsLocal) {
-      try {
-        const resolver = new URL(configuredResolver);
-        if (resolver.hostname.toLowerCase() === pageHostname.toLowerCase() && resolver.port === '8000') return null;
-      } catch { /* Keep the configured value so the normal connection error can explain it. */ }
-    }
+  if (configuredResolver && !LOOPBACK_URL.test(configuredResolver)) {
     return configuredResolver.replace(/\/+$/, '');
   }
 
-  // A public static host has no resolver listening on its own port 8000.
-  // Returning null lets the UI explain how to configure the deployed service.
-  if (!pageIsLocal) return null;
+  if (configuredResolver && !pageIsLocal) return null;
 
   // A phone's 127.0.0.1 is the phone itself. Use the same host that served
   // a local frontend, but the resolver's port, so LAN clients reach the dev PC.
+  // Production deployments should configure the public resolver URL explicitly.
   if (typeof window !== 'undefined') {
     const resolver = new URL(window.location.origin);
-    resolver.port = '8000';
+    const configuredPort = configuredResolver ? new URL(configuredResolver).port : '';
+    resolver.port = configuredPort || '8000';
     return resolver.origin;
   }
 
-  return 'http://127.0.0.1:8000';
+  return (configuredResolver || 'http://127.0.0.1:8000').replace(/\/+$/, '');
 }
 
 export const streamResolverBaseUrl = getStreamResolverBaseUrl();

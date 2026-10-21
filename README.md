@@ -23,7 +23,7 @@ You can run only the frontend with `npm run dev:web`, or only the API with `npm 
 
 ## Deploy the stream resolver
 
-The Netlify site is static; it cannot run the Python API on `reelhousec.netlify.app:8000`. The frontend now uses port `8000` automatically only on local/private network hosts. A hosted site needs a separately deployed resolver with a public HTTPS address.
+The Netlify site is static and does not host the Python API. Local development defaults to port `8000`; a production deployment should set `VITE_STREAM_RESOLVER_URL` to a separately deployed resolver's public HTTPS address. Without that setting, the compatibility fallback tries the site hostname on port `8000`, which is not served by a standard static Netlify deployment.
 
 This repository includes a Render Blueprint in `render.yaml`:
 
